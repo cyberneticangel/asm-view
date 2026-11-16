@@ -3,6 +3,7 @@
 
 mod color;
 mod explain;
+mod source;
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::{self, BufWriter, IsTerminal, Write};
@@ -49,6 +50,10 @@ struct Args {
     /// Hide raw instruction bytes
     #[arg(long)]
     no_bytes: bool,
+
+    /// Interleave source code lines (needs debug info, e.g. built with -g)
+    #[arg(short = 'S', long)]
+    source: bool,
 
     /// Show raw mangled symbol names instead of demangling Rust / C++ names
     #[arg(long)]
@@ -242,6 +247,7 @@ struct Printer<'a, W: Write> {
     ctx: Ctx<'a>,
     show_bytes: bool,
     show_comments: bool,
+    source: Option<source::SourceMap>,
 }
 
 impl<W: Write> Printer<'_, W> {
@@ -280,12 +286,31 @@ impl<W: Write> Printer<'_, W> {
         if let Some(name) = self.ctx.syms.at(addr) {
             writeln!(self.out)?;
             writeln!(self.out, "{}", self.pal.header(&format!("{addr:016x} <{name}>:")))?;
+            if let Some(src) = &mut self.source {
+                src.reset();
+            }
+        }
+        Ok(())
+    }
+
+    fn source_lines(&mut self, addr: u64) -> io::Result<()> {
+        let Some(src) = &mut self.source else { return Ok(()) };
+        for l in src.lines_for(addr) {
+            let s = match l {
+                source::SourceLine::File(loc) => self.pal.source_file(&loc),
+                source::SourceLine::Text(n, text) => {
+                    format!("{} {}", self.pal.addr(&format!("{n:>6} │")), self.pal.source_text(&text))
+                }
+                source::SourceLine::Missing(file, n) => self.pal.source_file(&format!("{file}:{n}")),
+            };
+            writeln!(self.out, "{s}")?;
         }
         Ok(())
     }
 
     fn line(&mut self, addr: u64, bytes: &[u8], mnem: &str, ops: &str) -> io::Result<()> {
         self.header_if_symbol(addr)?;
+        self.source_lines(addr)?;
         let (kind, mut comment) = explain::explain(&self.ctx, mnem, ops, addr + bytes.len() as u64);
 
         let mut s = String::new();
@@ -308,7 +333,9 @@ impl<W: Write> Printer<'_, W> {
         // Append `<symbol>` after direct branch targets, as objdump does.
         let mut plain_width = ops.chars().count();
         s.push_str(&self.pal.operands(ops));
+        // Only direct targets: in `call [rip + 0x40afe]` the number is an offset, not an address.
         if matches!(kind, Kind::Jump | Kind::Call)
+            && !ops.contains(['[', '('])
             && let Some(name) = explain::find_hex(ops).and_then(|t| self.ctx.syms.describe(t)) {
                 plain_width += 1 + name.chars().count();
                 s.push(' ');
@@ -340,6 +367,16 @@ fn run(args: Args) -> Result<(), String> {
     };
     let pal = Palette { enabled: color };
 
+    let source = if args.source {
+        let map = source::SourceMap::load(&obj);
+        if map.is_none() {
+            eprintln!("asm-view: warning: no DWARF line info in {} (rebuild with -g); showing assembly only", args.file.display());
+        }
+        map
+    } else {
+        None
+    };
+
     let stdout = io::stdout().lock();
     let mut p = Printer {
         out: BufWriter::new(stdout),
@@ -348,6 +385,7 @@ fn run(args: Args) -> Result<(), String> {
         ctx: Ctx { isa, att: args.att, syms: &syms },
         show_bytes: !args.no_bytes,
         show_comments: !args.no_comments,
+        source,
     };
 
     let w = |e: io::Error| e.to_string();

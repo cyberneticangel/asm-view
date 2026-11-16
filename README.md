@@ -21,6 +21,7 @@ $ asm-view ./fib -f main
 - **Comments for every instruction**, written as pseudo-C (`ebx += eax`, `if greater (signed) goto …`) so a listing reads quickly. Common idioms get called out, such as `xor eax, eax` zeroing a register.
 - **Color by instruction type**: jumps, calls, returns, moves, arithmetic, logic, compares, stack operations and SIMD each get their own color, and numbers in operands are highlighted.
 - **Symbol names everywhere**: jump and call targets are labeled with the function they land in, `rip`-relative addresses are resolved to absolute ones, and calls into shared libraries show up as `name@plt`.
+- **Source interleaving** with `-S`, like `objdump -S`, for binaries built with debug info.
 - **Rust and C++ demangling**, so you see `geo::P::area(int) const` instead of `_ZNK3geo1P4areaEi`.
 - **Many formats and architectures**: ELF, Mach-O and PE/COFF files; x86, x86-64, ARM, AArch64 and RISC-V.
 
@@ -45,6 +46,7 @@ asm-view [OPTIONS] <FILE>
 | `-f, --function <NAME>` | Only show this function. Repeatable. |
 | `--fuzzy` | Make `-f` match any part of the name |
 | `-j, --section <NAME>` | Only show this section. Repeatable. Default: all executable sections |
+| `-S, --source` | Show source code lines above the instructions they compiled to (needs debug info) |
 | `--att` | Use AT&T syntax on x86 (default: Intel) |
 | `--no-bytes` | Hide the raw instruction bytes |
 | `--no-comments` | Hide the comments, for plain colored disassembly |
@@ -91,6 +93,30 @@ asm-view ./shapes -f _ZNK3geo1P4areaEi
     1298:  imul     eax, dword ptr [rdi]          ; eax *= [rdi] (signed)
     129b:  ret                                    ; return to caller (pop return address)
 ```
+
+Show the source code alongside the assembly. Build with debug info first (`-g` for C/C++; Rust debug builds have it, or set `debug = true` under `[profile.release]`):
+
+```sh
+cc -O1 -g -o sums sums.c
+asm-view ./sums -S -f sum_squares --no-bytes --no-comments
+```
+
+```
+0000000000001170 <sum_squares>:
+sums.c:10
+    10 │     for (int i = 0; i < n; i++) {
+      1170:  test     esi, esi
+      1172:  jle      0x11a3 <sum_squares+0x33>
+      ...
+    11 │         total += square(v[i]);
+      1190:  mov      eax, dword ptr [rdx]
+     4 │     return x * x;
+      1192:  imul     eax, eax
+    11 │         total += square(v[i]);
+      1195:  add      ecx, eax
+```
+
+With optimizations on, lines show up out of order and more than once, because the compiler moves code around. Here `square()` was inlined, so its line 4 appears inside the loop.
 
 Use AT&T syntax and hide the bytes for a compact view:
 

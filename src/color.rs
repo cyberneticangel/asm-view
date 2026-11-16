@@ -36,6 +36,12 @@ impl Palette {
     pub fn comment(&self, s: &str) -> String {
         self.paint("3;32", s)
     }
+    pub fn source_file(&self, s: &str) -> String {
+        self.paint("1;34", s)
+    }
+    pub fn source_text(&self, s: &str) -> String {
+        self.paint("97", s)
+    }
     pub fn bad(&self, s: &str) -> String {
         self.paint("1;31", s)
     }
