@@ -4,6 +4,7 @@
 //! reads faster than prose when scanning a listing.
 
 use crate::Symbols;
+use crate::data::Memory;
 
 /// Broad category of an instruction, used for coloring.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -34,6 +35,7 @@ pub struct Ctx<'a> {
     pub isa: Isa,
     pub att: bool,
     pub syms: &'a Symbols,
+    pub mem: &'a Memory<'a>,
 }
 
 /// Split an operand string on top-level commas (ignoring commas inside
@@ -123,6 +125,17 @@ fn resolve_rip(ctx: &Ctx, op: &str, next_pc: u64) -> String {
         return format!("{prefix}[0x{abs:x}{name}]");
     }
     op.to_string()
+}
+
+/// An operand that is nothing but an absolute address, like `0x402004` or a
+/// resolved RIP-relative `0x2004 <sym>`. Registers or memory accesses don't count.
+fn plain_addr(op: &str) -> Option<u64> {
+    let first = op.split_whitespace().next()?;
+    let hex = first.strip_prefix("0x")?;
+    if op.contains(['[', '(', '+', '-', '*']) && !op.contains('<') {
+        return None;
+    }
+    u64::from_str_radix(hex, 16).ok()
 }
 
 fn target(ctx: &Ctx, op: &str) -> String {
@@ -218,9 +231,17 @@ fn x86(ctx: &Ctx, m: &str, ops: &[String]) -> (Kind, String) {
 
     let r = match m {
         // ── data movement
+        // An address constant that points at a string (common in non-PIE binaries).
+        "mov" | "movabs" if let Some(st) = plain_addr(&raw_b).and_then(|t| ctx.mem.string_at(t)) => {
+            (Move, format!("{a} = {st}  (string at {b})"))
+        }
         "mov" | "movabs" => (Move, sz(format!("{a} = {b}"))),
         "movzx" => (Move, sz(format!("{a} = {b} (zero-extended)"))),
         "movsx" | "movsxd" => (Move, sz(format!("{a} = {b} (sign-extended)"))),
+        // `lea rdi, [rip + 0xe51]` loading the address of a string literal.
+        "lea" if let Some((t, st)) = plain_addr(&addr_expr(&b)).and_then(|t| Some((t, ctx.mem.string_at(t)?))) => {
+            (Move, format!("{a} = {st}  (string at 0x{t:x})"))
+        }
         "lea" => (Move, format!("{a} = {}  (address math, no memory access)", addr_expr(&b))),
         "xchg" => (Move, format!("swap {a} and {b}")),
         "cmpxchg" => (Move, format!("if accumulator == {a}: {a} = {b}, else load {a} into accumulator")),
@@ -234,6 +255,9 @@ fn x86(ctx: &Ctx, m: &str, ops: &[String]) -> (Kind, String) {
         "cbw" => (Move, "ax = sign-extend al".into()),
 
         // ── stack
+        "push" if let Some(st) = plain_addr(&raw_a).and_then(|t| ctx.mem.string_at(t)) => {
+            (Stack, format!("push address of {st}  (string at {a})"))
+        }
         "push" => (Stack, format!("rsp -= 8; [rsp] = {a}  (push onto stack)")),
         "pop" => (Stack, format!("{a} = [rsp]; rsp += 8  (pop from stack)")),
         "leave" => (Stack, "rsp = rbp; pop rbp  (tear down stack frame)".into()),

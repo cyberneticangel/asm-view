@@ -2,6 +2,8 @@
 //! with a plain-language comment, in color.
 
 mod color;
+mod data;
+mod dump;
 mod explain;
 mod source;
 
@@ -54,6 +56,10 @@ struct Args {
     /// Interleave source code lines (needs debug info, e.g. built with -g)
     #[arg(short = 'S', long)]
     source: bool,
+
+    /// Dump the full contents of all sections in hex, exactly like `objdump -s` (combine with -j)
+    #[arg(short = 's', long = "full-contents")]
+    full_contents: bool,
 
     /// Show raw mangled symbol names instead of demangling Rust / C++ names
     #[arg(long)]
@@ -357,8 +363,24 @@ impl<W: Write> Printer<'_, W> {
 fn run(args: Args) -> Result<(), String> {
     let data = std::fs::read(&args.file).map_err(|e| format!("{}: {e}", args.file.display()))?;
     let obj = object::File::parse(&*data).map_err(|e| format!("{}: {e}", args.file.display()))?;
+
+    if args.full_contents {
+        let mut out = BufWriter::new(io::stdout().lock());
+        let w = |e: io::Error| e.to_string();
+        dump::run(&mut out, &obj, &args.file.display().to_string(), &args.sections).map_err(w)?;
+        out.flush().map_err(w)?;
+        // Same check and wording as objdump.
+        let names = dump::visible_names(&obj);
+        let missing: Vec<&String> = args.sections.iter().filter(|j| !names.contains(j)).collect();
+        for j in &missing {
+            eprintln!("asm-view: section '{j}' mentioned in a -j option, but not found in any input file");
+        }
+        return if missing.is_empty() { Ok(()) } else { Err(String::new()) };
+    }
+
     let (cs, isa) = build_capstone(obj.architecture(), args.att)?;
     let syms = collect_symbols(&obj, !args.no_demangle);
+    let mem = data::Memory::new(&obj);
 
     let color = match args.color {
         ColorMode::Always => true,
@@ -382,7 +404,7 @@ fn run(args: Args) -> Result<(), String> {
         out: BufWriter::new(stdout),
         pal,
         cs: &cs,
-        ctx: Ctx { isa, att: args.att, syms: &syms },
+        ctx: Ctx { isa, att: args.att, syms: &syms, mem: &mem },
         show_bytes: !args.no_bytes,
         show_comments: !args.no_comments,
         source,
@@ -392,7 +414,7 @@ fn run(args: Args) -> Result<(), String> {
     writeln!(
         p.out,
         "{}",
-        p.pal.header(&format!("{}:     file format {:?} {:?}", args.file.display(), obj.format(), obj.architecture()))
+        p.pal.header(&format!("{}:     file format {}", args.file.display(), dump::bfd_target(&obj)))
     )
     .map_err(w)?;
 
@@ -463,6 +485,7 @@ fn main() -> ExitCode {
     match run(Args::parse()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) if e.contains("Broken pipe") => ExitCode::SUCCESS, // e.g. piping into `head`
+        Err(e) if e.is_empty() => ExitCode::FAILURE,              // already reported
         Err(e) => {
             eprintln!("asm-view: {e}");
             ExitCode::FAILURE

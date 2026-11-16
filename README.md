@@ -21,6 +21,7 @@ $ asm-view ./fib -f main
 - **Comments for every instruction**, written as pseudo-C (`ebx += eax`, `if greater (signed) goto …`) so a listing reads quickly. Common idioms get called out, such as `xor eax, eax` zeroing a register.
 - **Color by instruction type**: jumps, calls, returns, moves, arithmetic, logic, compares, stack operations and SIMD each get their own color, and numbers in operands are highlighted.
 - **Symbol names everywhere**: jump and call targets are labeled with the function they land in, `rip`-relative addresses are resolved to absolute ones, and calls into shared libraries show up as `name@plt`.
+- **String literals shown inline**: when an instruction loads the address of a string, the comment shows the string itself, e.g. `rdi = "hello, world"  (string at 0x2004)`.
 - **Source interleaving** with `-S`, like `objdump -S`, for binaries built with debug info.
 - **Rust and C++ demangling**, so you see `geo::P::area(int) const` instead of `_ZNK3geo1P4areaEi`.
 - **Many formats and architectures**: ELF, Mach-O and PE/COFF files; x86, x86-64, ARM, AArch64 and RISC-V.
@@ -47,6 +48,7 @@ asm-view [OPTIONS] <FILE>
 | `--fuzzy` | Make `-f` match any part of the name |
 | `-j, --section <NAME>` | Only show this section. Repeatable. Default: all executable sections |
 | `-S, --source` | Show source code lines above the instructions they compiled to (needs debug info) |
+| `-s, --full-contents` | Hex dump of section contents, identical to `objdump -s`. Combine with `-j` |
 | `--att` | Use AT&T syntax on x86 (default: Intel) |
 | `--no-bytes` | Hide the raw instruction bytes |
 | `--no-comments` | Hide the comments, for plain colored disassembly |
@@ -134,6 +136,18 @@ Only show certain sections, such as the PLT stubs that calls into shared librari
 
 ```sh
 asm-view ./myprog -j .plt -j .plt.sec
+```
+
+Hex dump of a section's raw bytes, in exactly the format of `objdump -s`. Useful for seeing the data that instructions point at:
+
+```sh
+asm-view -s -j .rodata ./myprog
+```
+
+```
+Contents of section .rodata:
+ 2000 01000200 68656c6c 6f2c2077 6f726c64  ....hello, world
+ 2010 00                                   .
 ```
 
 Plain text for saving or diffing:
